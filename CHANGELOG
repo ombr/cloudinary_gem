@@ -1,3 +1,91 @@
+= Version 1.0.81 - 2015-01-08
+  * CarrierWave - support default_format if format is unknown, support arbitrary format for resource_type raw.
+
+= Version 1.0.80 - 2015-01-01
+  * Support upload_chunked direct upload for large raw files.
+
+= Version 1.0.79 - 2014-12-11
+  * Support folder listing API.
+  * Add support for conditional processing in CarrierWave plugin.
+  * Support tags in upload_large.
+  * Support url_suffix and use_root_path for private_cdn URL building.
+  * Allow using sign_url with type authenticated.
+  * Don't sign version component by default.
+  * Support for new domain sharding syntax and secure domain sharding. Support for secure_cdn_subdomain flag.
+  * Update Cloudinary's jQuery plugin to v1.0.21.
+
+= Version 1.0.78 - 2014-11-04
+  * Add app_root method that handled Rails.root, which is a String in old Rails versions.
+  * Issue #127 - solve cyclical dependency in case cloudinary was included after Rails was initialized.
+
+= Version 1.0.77 - 2014-09-22
+  * Update Cloudinary's jQuery plugin to v1.0.20.
+  * Support invalidation in bulk deletion requests.
+
+= Version 1.0.76 - 2014-08-24
+  * Added supported image types for rake cloudinary:sync_static.
+
+= Version 1.0.75 - 2014-07-30
+  * Don't use Rails' image_tag for repsponsive/hidpi to prevent wrong alt and data URIs.
+
+= Version 1.0.74 - 2014-07-14
+  * Support custom_coordinates in upload and update. Support coordinates in resource details.
+  * Support delete_by_token for direct uploads.
+  * Support shorthand blank for cl_image_tag with responsive/hidpi.
+  * Correctly encode one-level double arrays.
+  * Support non-upload resources in signed_preloaded_image (Issue #117).
+  * Support background removal upload and admin API parameter.
+  * Update Cloudinary's jQuery plugin to v1.0.19.
+
+= Version 1.0.73 - 2014-06-30
+  * Support dpr transformation parameter.
+  * Support automatic dpr (for HiDPI) and automatic width (for responsive).
+  * Accept timestamp parameter in upload method options.
+  * Support pHash info in admin API.
+  * Support the multiple upload flag directly in cl_image_upload_tag.
+  * 'secure' configuration parameter from environment variable.
+  * Make api_key and api_secret optional in unsigned upload.
+  * Support the case Rails is defined but Rails.root isn't.
+
+= Version 1.0.72 - 2014-04-15
+  * Fixing broken sign_request.
+
+= Version 1.0.71 - 2014-04-15
+  * Upload preset support.
+  * Unsigned upload support.
+  * phash upload parameter support.
+  * Resource listing by start_at support.
+  * Updating to jQuery plugin v1.0.14.
+
+= Version 1.0.70 - 2014-03-25
+  * Support upload_large without public_id. 
+  * Remove public_id from method parameters.
+  * Backward compatibility for old upload_large API.
+  * Issue #95 - exception when using storage_type :private
+  * Updating to jQuery plugin v1.0.13.
+
+= Version 1.0.69 - 2014-02-25
+  * Admin API update method.
+  * Admin API listing by moderation kind and status.
+  * Support moderation status in admin API listing.
+  * Support moderation flag in upload. 
+  * New upload and update API parameters: moderation, ocr, raw_conversion, categorization, detection, similarity_search and auto_tagging.
+  * Allow CloudinaryHelper to be included into standalone classes.
+  * Added support for Sequel models using CarrierWave.
+
+= Version 1.0.68 - 2014-02-16
+  * Support for uploading large raw files.
+  * Correct support for image_tag and image_path override.
+  * Add direction support to Admin API listings.
+
+= Version 1.0.67 - 2014-01-09
+  * Support specifying face coordinates in upload API.
+  * Support specifying context (currently alt and caption) in upload API and returning context in API.  
+  * Support specifying allowed image formats in upload API.
+  * Support listing resources in admin API by multiple public IDs.
+  * Send User-Agent header with client library version in API request.  
+  * Support for signed-URLs to override restricted dynamic URLs.    
+
 = Version 1.0.66 - 2013-11-14
   * Support overwrite flag in upload
   * Support tags flag in resources_by_tag

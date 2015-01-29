@@ -7,6 +7,7 @@ require 'aws_cf_signer'
 class Cloudinary::Utils
   # @deprecated Use Cloudinary::SHARED_CDN
   SHARED_CDN = Cloudinary::SHARED_CDN  
+  DEFAULT_RESPONSIVE_WIDTH_TRANSFORMATION = {:width => :auto, :crop => :limit}
   
   # Warning: options are being destructively updated!
   def self.generate_transformation_string(options={})
@@ -18,9 +19,11 @@ class Cloudinary::Utils
       options[key.to_sym] = options.delete(key) if key.is_a?(String)
     end
     
+    responsive_width = config_option_consume(options, :responsive_width) 
     size = options.delete(:size)
     options[:width], options[:height] = size.split("x") if size    
     width = options[:width]
+    width = width.to_s if width.is_a?(Symbol)
     height = options[:height]
     has_layer = !options[:overlay].blank? || !options[:underlay].blank?
          
@@ -28,10 +31,10 @@ class Cloudinary::Utils
     angle = build_array(options.delete(:angle)).join(".")
 
     no_html_sizes = has_layer || !angle.blank? || crop.to_s == "fit" || crop.to_s == "limit" || crop.to_s == "lfill"
-    options.delete(:width) if width && (width.to_f < 1 || no_html_sizes)
-    options.delete(:height) if height && (height.to_f < 1 || no_html_sizes)
+    options.delete(:width) if width && (width.to_f < 1 || no_html_sizes || width == "auto" || responsive_width)
+    options.delete(:height) if height && (height.to_f < 1 || no_html_sizes || responsive_width)
 
-    width=height=nil if crop.nil? && !has_layer
+    width=height=nil if crop.nil? && !has_layer && width != "auto"
 
     background = options.delete(:background)
     background = background.sub(/^#/, 'rgb:') if background
@@ -61,8 +64,9 @@ class Cloudinary::Utils
       border = nil
     end
     flags = build_array(options.delete(:flags)).join(".")
+    dpr = config_option_consume(options, :dpr)
     
-    params = {:w=>width, :h=>height, :t=>named_transformation, :c=>crop, :b=>background, :e=>effect, :a=>angle, :bo=>border, :fl=>flags, :co=>color}
+    params = {:w=>width, :h=>height, :t=>named_transformation, :c=>crop, :b=>background, :e=>effect, :a=>angle, :bo=>border, :fl=>flags, :co=>color, :dpr=>dpr}
     { :x=>:x, :y=>:y, :r=>:radius, :d=>:default_image, :g=>:gravity, :q=>:quality, :cs=>:color_space, :o=>:opacity,
       :p=>:prefix, :l=>:overlay, :u=>:underlay, :f=>:fetch_format, :dn=>:density, :pg=>:page, :dl=>:delay
     }.each do
@@ -73,7 +77,20 @@ class Cloudinary::Utils
     transformation = params.reject{|k,v| v.blank?}.map{|k,v| [k.to_s, v]}.sort_by(&:first).map{|k,v| "#{k}_#{v}"}.join(",")
     raw_transformation = options.delete(:raw_transformation)
     transformation = [transformation, raw_transformation].reject(&:blank?).join(",")
-    (base_transformations << transformation).reject(&:blank?).join("/")    
+    transformations = base_transformations << transformation
+    if responsive_width
+      responsive_width_transformation = Cloudinary.config.responsive_width_transformation || DEFAULT_RESPONSIVE_WIDTH_TRANSFORMATION
+      transformations << generate_transformation_string(responsive_width_transformation.clone)
+    end
+
+    if width.to_s == "auto" || responsive_width
+      options[:responsive] = true
+    end
+    if dpr.to_s == "auto"
+      options[:hidpi] = true
+    end
+
+    transformations.reject(&:blank?).join("/")    
   end
   
   def self.api_string_to_sign(params_to_sign)
@@ -107,7 +124,17 @@ class Cloudinary::Utils
     shorten = config_option_consume(options, :shorten) 
     force_remote = options.delete(:force_remote)
     cdn_subdomain = config_option_consume(options, :cdn_subdomain) 
-    
+    secure_cdn_subdomain = config_option_consume(options, :secure_cdn_subdomain) 
+    sign_url = config_option_consume(options, :sign_url)
+    secret = config_option_consume(options, :api_secret)
+    sign_version = config_option_consume(options, :sign_version) # Deprecated behavior
+    url_suffix = options.delete(:url_suffix)
+    use_root_path = config_option_consume(options, :use_root_path)
+    if !private_cdn
+      raise(CloudinaryException, "URL Suffix only supported in private CDN") unless url_suffix.blank?
+      raise(CloudinaryException, "Root path only supported in private CDN") if use_root_path
+    end
+   
     original_source = source
     return original_source if source.blank?
     if defined?(CarrierWave::Uploader::Base) && source.is_a?(CarrierWave::Uploader::Base)
@@ -133,43 +160,107 @@ class Cloudinary::Utils
       end
     end
     
-    type ||= :upload
+    resource_type, type = finalize_resource_type(resource_type, type, url_suffix, use_root_path, shorten)
+    source, source_to_sign = finalize_source(source, format, url_suffix)
+    
+    version ||= 1 if source_to_sign.include?("/") and !source_to_sign.match(/^v[0-9]+/) and !source_to_sign.match(/^https?:\//)    
+    version &&= "v#{version}" 
 
+    transformation = transformation.gsub(%r(([^:])//), '\1/')
+    if sign_url
+      to_sign = [transformation, sign_version && version, source_to_sign].reject(&:blank?).join("/")
+      signature = 's--' + Base64.urlsafe_encode64(Digest::SHA1.digest(to_sign + secret))[0,8] + '--'
+    end
+
+    prefix = unsigned_download_url_prefix(source, cloud_name, private_cdn, cdn_subdomain, secure_cdn_subdomain, cname, secure, secure_distribution)
+    source = [prefix, resource_type, type, signature, transformation, version, source].reject(&:blank?).join("/")
+  end
+
+  def self.finalize_source(source, format, url_suffix)
+    source = source.gsub(%r(([^:])//), '\1/')
     if source.match(%r(^https?:/)i)
       source = smart_escape(source)
+      source_to_sign = source
     else
       source = smart_escape(URI.decode(source)) 
-      source = "#{source}.#{format}" if !format.blank?
-    end
-
-    if cloud_name.start_with?("/") # For development
-      prefix = "/res" + cloud_name
-    else 
-      shared_domain = !private_cdn
-      if secure        
-        if secure_distribution.nil? || secure_distribution == Cloudinary::OLD_AKAMAI_SHARED_CDN
-          secure_distribution = private_cdn ? "#{cloud_name}-res.cloudinary.com" : Cloudinary::SHARED_CDN
-        end
-        shared_domain ||= secure_distribution == Cloudinary::SHARED_CDN
-        prefix = "https://#{secure_distribution}"
-      else
-        subdomain = cdn_subdomain ? "a#{(Zlib::crc32(source) % 5) + 1}." : ""
-        host = cname.blank? ? "#{private_cdn ? "#{cloud_name}-" : ""}res.cloudinary.com" : cname
-        prefix = "http://#{subdomain}#{host}"
+      source_to_sign = source
+      unless url_suffix.blank?
+        raise(CloudinaryException, "url_suffix should not include . or /") if url_suffix.match(%r([\./]))
+        source = "#{source}/#{url_suffix}" 
       end
-      prefix += "/#{cloud_name}" if shared_domain
+      if !format.blank?
+        source = "#{source}.#{format}" 
+        source_to_sign = "#{source_to_sign}.#{format}" 
+      end
     end
-    
+    [source, source_to_sign]
+  end    
+
+  def self.finalize_resource_type(resource_type, type, url_suffix, use_root_path, shorten)
+    type ||= :upload
+    if !url_suffix.blank?
+      if resource_type.to_s == "image" && type.to_s == "upload"
+        resource_type = "images"
+        type = nil
+      elsif resource_type.to_s == "raw" && type.to_s == "upload" 
+        resource_type = "files"
+        type = nil
+      else
+        raise(CloudinaryException, "URL Suffix only supported for image/upload and raw/upload")
+      end
+    end
+    if use_root_path
+      if (resource_type.to_s == "image" && type.to_s == "upload") || (resource_type.to_s == "images" && type.blank?)
+        resource_type = nil
+        type = nil
+      else
+        raise(CloudinaryException, "Root path only supported for image/upload")
+      end
+    end
     if shorten && resource_type.to_s == "image" && type.to_s == "upload"
       resource_type = "iu"
       type = nil
     end
-    version ||= 1 if source.include?("/") and !source.match(/^v[0-9]+/) and !source.match(/^https?:\//)
-    source = prefix + "/" + [resource_type, 
-     type, transformation, version ? "v#{version}" : nil,
-     source].reject(&:blank?).join("/").gsub(%r(([^:])//), '\1/')
-  end
+    [resource_type, type]
+  end    
   
+  # cdn_subdomain and secure_cdn_subdomain
+  # 1) Customers in shared distribution (e.g. res.cloudinary.com)
+  #   if cdn_domain is true uses res-[1-5].cloudinary.com for both http and https. Setting secure_cdn_subdomain to false disables this for https.
+  # 2) Customers with private cdn 
+  #   if cdn_domain is true uses cloudname-res-[1-5].cloudinary.com for http
+  #   if secure_cdn_domain is true uses cloudname-res-[1-5].cloudinary.com for https (please contact support if you require this)
+  # 3) Customers with cname
+  #   if cdn_domain is true uses a[1-5].cname for http. For https, uses the same naming scheme as 1 for shared distribution and as 2 for private distribution.
+  def self.unsigned_download_url_prefix(source, cloud_name, private_cdn, cdn_subdomain, secure_cdn_subdomain, cname, secure, secure_distribution)
+    return "/res#{cloud_name}" if cloud_name.start_with?("/") # For development
+
+    shared_domain = !private_cdn
+
+    if secure
+      if secure_distribution.nil? || secure_distribution == Cloudinary::OLD_AKAMAI_SHARED_CDN
+        secure_distribution = private_cdn ? "#{cloud_name}-res.cloudinary.com" : Cloudinary::SHARED_CDN
+      end
+      shared_domain ||= secure_distribution == Cloudinary::SHARED_CDN
+      secure_cdn_subdomain = cdn_subdomain if secure_cdn_subdomain.nil? && shared_domain
+
+      if secure_cdn_subdomain
+        secure_distribution = secure_distribution.gsub('res.cloudinary.com', "res-#{(Zlib::crc32(source) % 5) + 1}.cloudinary.com")
+      end
+
+      prefix = "https://#{secure_distribution}"
+    elsif cname
+      subdomain = cdn_subdomain ? "a#{(Zlib::crc32(source) % 5) + 1}." : ""
+      prefix = "http://#{subdomain}#{cname}"
+    else
+      host = [private_cdn ? "#{cloud_name}-" : "", "res", cdn_subdomain ? "-#{(Zlib::crc32(source) % 5) + 1}" : "", ".cloudinary.com"].join
+      prefix = "http://#{host}"        
+    end
+    prefix += "/#{cloud_name}" if shared_domain
+
+    prefix
+  end
+
   def self.cloudinary_api_url(action = 'upload', options = {})
     cloudinary = options[:upload_prefix] || Cloudinary.config.upload_prefix || "https://api.cloudinary.com"
     cloud_name = options[:cloud_name] || Cloudinary.config.cloud_name || raise(CloudinaryException, "Must supply cloud_name")
@@ -180,7 +271,7 @@ class Cloudinary::Utils
   def self.sign_request(params, options={})
     api_key = options[:api_key] || Cloudinary.config.api_key || raise(CloudinaryException, "Must supply api_key")
     api_secret = options[:api_secret] || Cloudinary.config.api_secret || raise(CloudinaryException, "Must supply api_secret")
-    params = params.reject{|k, v| v.blank?}
+    params = params.reject{|k, v| self.safe_blank?(v)}
     params[:signature] = Cloudinary::Utils.api_sign_request(params, api_secret)
     params[:api_key] = api_key
     params
@@ -216,7 +307,7 @@ class Cloudinary::Utils
   end
   
   def self.cloudinary_url(public_id, options = {})
-    if options[:type].to_s == 'authenticated'
+    if options[:type].to_s == 'authenticated' && !options[:sign_url]
       result = signed_download_url(public_id, options)
     else
       result = unsigned_download_url(public_id, options)
@@ -225,7 +316,7 @@ class Cloudinary::Utils
   end
 
   def self.asset_file_name(path)
-    data = Rails.root.join(path).read(:mode=>"rb")
+    data = Cloudinary.app_root.join(path).read(:mode=>"rb")
     ext = path.extname
     md5 = Digest::MD5.hexdigest(data)
     public_id = "#{path.basename(ext)}-#{md5}"
@@ -245,7 +336,7 @@ class Cloudinary::Utils
   end
 
   def self.signed_preloaded_image(result)
-    "#{result["resource_type"]}/upload/v#{result["version"]}/#{[result["public_id"], result["format"]].reject(&:blank?).join(".")}##{result["signature"]}"
+    "#{result["resource_type"]}/#{result["type"] || "upload"}/v#{result["version"]}/#{[result["public_id"], result["format"]].reject(&:blank?).join(".")}##{result["signature"]}"
   end
   
   @@json_decode = false
@@ -270,6 +361,23 @@ class Cloudinary::Utils
       when Array then array
       when nil then []
       else [array]
+    end
+  end
+    
+  def self.encode_hash(hash)
+    case hash
+      when Hash then hash.map{|k,v| "#{k}=#{v}"}.join("|")
+      when nil then ""
+      else hash
+    end
+  end
+  
+  def self.encode_double_array(array)
+    array = build_array(array)
+    if array.length > 0 && array[0].is_a?(Array)
+      return array.map{|a| build_array(a).join(",")}.join("|")
+    else
+      return array.join(",")
     end
   end
   
@@ -309,5 +417,9 @@ class Cloudinary::Utils
     when TrueClass then 1
     when FalseClass then 0
     end
+  end
+  
+  def self.safe_blank?(value)
+    value.nil? || value == "" || value == []
   end
 end

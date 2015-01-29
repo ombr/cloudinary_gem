@@ -6,7 +6,7 @@ class Cloudinary::CarrierWave::Storage < ::CarrierWave::Storage::Abstract
       case file
       when Cloudinary::CarrierWave::PreloadedCloudinaryFile
         storage_type = uploader.class.storage_type || "upload"
-        raise CloudinaryException, "Uploader configured for type #{storage_type} but resource of type #{file.type} given." if storage_type != file.type
+        raise CloudinaryException, "Uploader configured for type #{storage_type} but resource of type #{file.type} given." if storage_type.to_s != file.type
         if uploader.public_id && uploader.auto_rename_preloaded?
           @stored_version = file.version
           uploader.rename(nil, true)
@@ -35,7 +35,6 @@ class Cloudinary::CarrierWave::Storage < ::CarrierWave::Storage::Abstract
       params[:type]=uploader.class.storage_type
 
       params[:resource_type] ||= :auto
-
       uploader.metadata = Cloudinary::Uploader.upload(data, params)
       if uploader.metadata["error"]
         raise Cloudinary::CarrierWave::UploadError.new(uploader.metadata["error"]["message"], uploader.metadata["error"]["http_code"])
@@ -64,6 +63,11 @@ class Cloudinary::CarrierWave::Storage < ::CarrierWave::Storage::Abstract
     store_cloudinary_identifier(version, filename)
   end
 
+  # Updates the model mounter identifier with version information.
+  #
+  # Carrierwave uses hooks when integrating with ORMs so it's important to
+  # update the identifier in a way that does not trigger hooks again or else
+  # you'll get stuck in a loop.
   def store_cloudinary_identifier(version, filename)
     name = "v#{version}/#{filename}"
     model_class = uploader.model.class
@@ -79,15 +83,20 @@ class Cloudinary::CarrierWave::Storage < ::CarrierWave::Storage::Abstract
     elsif defined?(Mongoid::Document) && uploader.model.is_a?(Mongoid::Document)
       # Mongoid support
       if Mongoid::VERSION.split(".").first.to_i >= 4
-        uploader.model.set(:"#{column}" => name)
+        column = column.to_sym
+        uploader.model.write_attribute(column, name)
+        uploader.model.set(column => name)
       else
         uploader.model.set(column, name)
       end
+    elsif defined?(Sequel::Model) && uploader.model.is_a?(Sequel::Model)
+      # Sequel support
+      uploader.model.this.update(column => name)
     elsif model_class.respond_to?(:update_all) && uploader.model.respond_to?(:_id)
       model_class.where(:_id=>uploader.model._id).update_all(column=>name)
       uploader.model.send :write_attribute, column, name
     else
-      raise CloudinaryException, "Only ActiveRecord and Mongoid are supported at the moment!"
+      raise CloudinaryException, "Only ActiveRecord, Mongoid and Sequel are supported at the moment!"
     end
   end
 end
